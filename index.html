@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ball Shooter Competition</title>
+  <style>
+    html,body{height:100%;margin:0;background:#000;color:#ddd;font-family:system-ui,-apple-system,Segoe UI,Roboto;overflow:hidden}
+    #overlay{position:fixed;left:12px;top:12px;z-index:10;max-width:360px}
+    .panel{background:rgba(0,0,0,0.45);padding:12px;border-radius:8px;backdrop-filter:blur(4px)}
+    #win,#lose{display:none;padding:18px;margin-top:12px;border-radius:8px;font-weight:700}
+    #win{background:linear-gradient(90deg,#0f0,#005500);color:#001}
+    #lose{background:linear-gradient(90deg,#f00,#550000);color:#fff}
+    #canvas-container{width:100%;height:100vh;display:block}
+    input[type=range]{width:100%}
+    label{font-size:13px;display:block;margin-top:10px}
+    #crosshair{position:fixed;left:50%;top:50%;width:20px;height:20px;margin-left:-10px;margin-top:-10px;z-index:5;pointer-events:none}
+    #crosshair:before,#crosshair:after{content:"";position:absolute;background:#fff}
+    #crosshair:before{left:9px;top:0;width:2px;height:20px}
+    #crosshair:after{left:0;top:9px;width:20px;height:2px}
+    #joystick { position:fixed; bottom:80px; left:80px; width:120px; height:120px; background:rgba(255,255,255,0.1); border-radius:50%; touch-action:none; z-index:20;}
+    #stick { position:absolute; left:50%; top:50%; width:50px; height:50px; margin-left:-25px; margin-top:-25px; background:rgba(255,255,255,0.3); border-radius:50%;}
+    #buttons { position:fixed; bottom:80px; right:80px; display:flex; flex-direction:column; gap:12px; z-index:20;}
+    #buttons button { width:70px; height:70px; border-radius:50%; border:none; background:rgba(255,255,255,0.2); color:#fff; font-size:18px;}
+    /* Health bars */
+    #hud { position:fixed; top:10px; left:0; right:0; display:flex; justify-content:space-between; padding:0 20px; z-index:15; }
+    .barContainer { width:180px; height:20px; background:rgba(255,255,255,0.2); border:1px solid #888; border-radius:10px; overflow:hidden;}
+    .barFill { height:100%; width:100%; }
+    #playerBar { background:linear-gradient(90deg,#0f0,#070); }
+    #enemyBar { background:linear-gradient(90deg,#f00,#700); }
+    /* Arrow indicator */
+    #arrowIndicator {
+      position: fixed;
+      width: 0;
+      height: 0;
+      border-left: 12px solid transparent;
+      border-right: 12px solid transparent;
+      border-bottom: 20px solid yellow;
+      z-index: 50;
+      transform-origin: center;
+      pointer-events: none;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="overlay">
+    <div class="panel">
+      <div><strong>Ball Shooter Competition</strong></div>
+      <ul style="margin:8px 0 0 18px;font-size:13px">
+        <li>Arrow keys / Joystick: pitch & yaw</li>
+        <li>A / D buttons: roll</li>
+        <li>Shoot button / Space: fire</li>
+        <li>R: reset</li>
+      </ul>
+      <label for="sensitivity">Rotation sensitivity</label>
+      <input id="sensitivity" type="range" min="0.005" max="0.05" step="0.002" value="0.015">
+      <button id="resetBtn">Reset</button>
+      <div id="win">You destroyed the ball — you win! 🎉</div>
+      <div id="lose">The ball destroyed you! ❌</div>
+    </div>
+  </div>
+  <!-- HUD -->
+  <div id="hud">
+    <div class="barContainer"><div id="playerBar" class="barFill"></div></div>
+    <div class="barContainer"><div id="enemyBar" class="barFill"></div></div>
+  </div>
+
+  <div id="crosshair"></div>
+  <div id="canvas-container"></div>
+
+  <!-- Arrow indicator -->
+  <div id="arrowIndicator"></div>
+
+  <!-- Joystick + Buttons -->
+  <div id="joystick"><div id="stick"></div></div>
+  <div id="buttons">
+    <button id="shootBtn">Shoot</button>
+    <button id="rollLeft">A</button>
+    <button id="rollRight">D</button>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.153.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.153.0/examples/js/loaders/GLTFLoader.js"></script>
+
+  <script>
+    const container = document.getElementById('canvas-container');
+    const scene = new THREE.Scene();
+    const renderer = new THREE.WebGLRenderer({antialias:true});
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    container.appendChild(renderer.domElement);
+
+    const camera = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.1, 5000);
+    camera.position.set(0,0,0);
+
+    // Stars
+    function createStars(){
+      const starCount = 3000;
+      const geom = new THREE.BufferGeometry();
+      const positions = [];
+      for(let i=0;i<starCount;i++){
+        positions.push((Math.random()-0.5)*4000);
+        positions.push((Math.random()-0.5)*4000);
+        positions.push((Math.random()-0.5)*4000);
+      }
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(positions,3));
+      const mat = new THREE.PointsMaterial({color:0xffffff,size:1.5,sizeAttenuation:true});
+      return new THREE.Points(geom,mat);
+    }
+    scene.add(createStars());
+
+    // Enemy Ball
+    const ballRadius = 15;
+    const ballGeom = new THREE.SphereGeometry(ballRadius, 32, 32);
+    const ballMat = new THREE.MeshStandardMaterial({color:0xff0000, emissive:0x220000});
+    const ball = new THREE.Mesh(ballGeom, ballMat);
+    scene.add(ball);
+
+    const light = new THREE.PointLight(0xffffff,1.2,0);
+    light.position.set(200,200,200);
+    scene.add(light);
+    scene.add(new THREE.AmbientLight(0xffffff,0.3));
+
+    function randomUnit(){
+      const v = new THREE.Vector3(Math.random()*2-1, Math.random()*2-1, Math.random()*2-1);
+      return v.normalize();
+    }
+    const sphereRadius = 500;
+    let ballPos = randomUnit().multiplyScalar(sphereRadius*0.4);
+    let speed = 3.0;
+    let ballVel = randomUnit().multiplyScalar(speed);
+    ball.position.copy(ballPos);
+
+    // Controls
+    let accel = 0.015;
+    const keys = {};
+    function pressKey(code){ keys[code]=true; }
+    function releaseKey(code){ keys[code]=false; }
+
+    window.addEventListener('keydown',(e)=>{ 
+      if(e.code==='Space'){ shoot(); } 
+      else if(e.key==='r'||e.key==='R'){ reset(); } 
+      else { pressKey(e.code); } 
+    });
+    window.addEventListener('keyup',(e)=>{ if(e.code!=='Space') releaseKey(e.code); });
+
+    function updateCamera(){
+      if(keys['ArrowDown']) camera.rotateX(-accel);
+      if(keys['ArrowUp']) camera.rotateX(accel);
+      if(keys['ArrowLeft']) camera.rotateY(accel);
+      if(keys['ArrowRight']) camera.rotateY(-accel);
+      if(keys['KeyA']) camera.rotateZ(accel);
+      if(keys['KeyD']) camera.rotateZ(-accel);
+    }
+
+    // Bullets
+    const bullets = [];
+    const enemyBullets = [];
+    const bulletSpeed = 20;
+
+    function shoot(){
+      const bulletGeom = new THREE.SphereGeometry(2,8,8);
+      const bulletMat = new THREE.MeshBasicMaterial({color:0xffff00});
+      const bullet = new THREE.Mesh(bulletGeom, bulletMat);
+      const dir = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion).normalize();
+      bullet.position.copy(camera.position);
+      bullets.push({mesh:bullet,vel:dir.multiplyScalar(bulletSpeed)});
+      scene.add(bullet);
+    }
+
+    function enemyShoot(){
+      if(gameOver) return;
+      const bulletGeom = new THREE.SphereGeometry(2,8,8);
+      const bulletMat = new THREE.MeshBasicMaterial({color:0x00ffff});
+      const bullet = new THREE.Mesh(bulletGeom, bulletMat);
+      const dir = camera.position.clone().sub(ball.position).normalize();
+      bullet.position.copy(ball.position);
+      enemyBullets.push({mesh:bullet,vel:dir.multiplyScalar(bulletSpeed*0.8)});
+      scene.add(bullet);
+
+      // schedule next shot randomly
+      const delay = 800 + Math.random()*1200; // 0.8s–2.0s
+      setTimeout(enemyShoot, delay);
+    }
+
+    // HP system
+    let playerHP = 20;
+    let enemyHP = 10;
+    const playerBar = document.getElementById('playerBar');
+    const enemyBar = document.getElementById('enemyBar');
+    const winDiv = document.getElementById('win');
+    const loseDiv = document.getElementById('lose');
+
+    function updateHP(){
+      playerBar.style.width = (playerHP/20*100)+"%";
+      enemyBar.style.width = (enemyHP/10*100)+"%";
+    }
+    updateHP();
+
+    let gameOver = false;
+
+    function stepBall(){
+      ballPos.add(ballVel.clone());
+      const dist = ballPos.length();
+      if(dist + ballRadius >= sphereRadius){
+        const normal = ballPos.clone().normalize();
+        ballPos = normal.clone().multiplyScalar(sphereRadius - ballRadius - 0.1);
+        const v = ballVel.clone();
+        const dot = v.dot(normal);
+        const reflected = v.clone().sub(normal.clone().multiplyScalar(2*dot));
+        ballVel = reflected;
+      }
+      ball.position.copy(ballPos);
+    }
+
+    // Arrow Indicator reference
+    const arrow = document.getElementById('arrowIndicator');
+
+    // Main loop
+    let last = performance.now();
+    function animate(t){
+      requestAnimationFrame(animate);
+      if(gameOver) return;
+      const now = t || performance.now();
+      const dt = Math.min((now - last)/1000,0.1);
+      last = now;
+
+      stepBall();
+
+      for(let i=bullets.length-1;i>=0;i--){
+        const b = bullets[i];
+        b.mesh.position.add(b.vel.clone().multiplyScalar(dt*60));
+        if(b.mesh.position.length()>sphereRadius*2){
+          scene.remove(b.mesh); bullets.splice(i,1); continue;
+        }
+        if(b.mesh.position.distanceTo(ball.position) < ballRadius){
+          scene.remove(b.mesh); bullets.splice(i,1);
+          enemyHP--; updateHP();
+          if(enemyHP<=0){ winDiv.style.display='block'; gameOver=true; }
+        }
+      }
+
+      for(let i=enemyBullets.length-1;i>=0;i--){
+        const b = enemyBullets[i];
+        b.mesh.position.add(b.vel.clone().multiplyScalar(dt*60));
+        if(b.mesh.position.length()>sphereRadius*2){
+          scene.remove(b.mesh); enemyBullets.splice(i,1); continue;
+        }
+        if(b.mesh.position.distanceTo(camera.position) < 10){
+          scene.remove(b.mesh); enemyBullets.splice(i,1);
+          playerHP--; updateHP();
+          if(playerHP<=0){ loseDiv.style.display='block'; gameOver=true; }
+        }
+      }
+
+      updateCamera();
+
+      // === Arrow Indicator ===
+      const vector = ball.position.clone().project(camera); // NDC space
+      if (vector.z > 1.0) {
+        // Behind the camera -> hide
+        arrow.style.display = "none";
+      } else {
+        arrow.style.display = "block";
+        const halfW = window.innerWidth / 2;
+        const halfH = window.innerHeight / 2;
+        let x = (vector.x * halfW) + halfW;
+        let y = (-vector.y * halfH) + halfH;
+
+        // Clamp to screen edges with margin
+        const margin = 40;
+        let clampedX = Math.min(Math.max(x, margin), window.innerWidth - margin);
+        let clampedY = Math.min(Math.max(y, margin), window.innerHeight - margin);
+
+        arrow.style.left = (clampedX - 12) + "px";
+        arrow.style.top = (clampedY - 12) + "px";
+
+        const dx = x - window.innerWidth/2;
+        const dy = y - window.innerHeight/2;
+        const angle = Math.atan2(dy, dx);
+        arrow.style.transform = `rotate(${angle+Math.PI/2}rad)`;
+      }
+
+      renderer.render(scene,camera);
+    }
+    requestAnimationFrame(animate);
+
+    // Reset
+    let shootInterval=null;
+    function reset(){
+      if(reset.locked) return;
+      reset.locked = true;
+      setTimeout(()=>reset.locked=false,500);
+
+      bullets.forEach(b=>scene.remove(b.mesh)); bullets.length=0;
+      enemyBullets.forEach(b=>scene.remove(b.mesh)); enemyBullets.length=0;
+      if(shootInterval){ clearInterval(shootInterval); shootInterval=null; }
+
+      enemyHP=10; playerHP=20;
+      ballPos = randomUnit().multiplyScalar(sphereRadius*0.4);
+      ballVel = randomUnit().multiplyScalar(speed);
+      ball.position.copy(ballPos);
+      camera.position.set(0,0,0);
+      camera.rotation.set(0,0,0);
+
+      updateHP();
+      winDiv.style.display='none';
+      loseDiv.style.display='none';
+      arrow.style.display='none';
+      gameOver=false;
+      last = performance.now();
+      setTimeout(enemyShoot,1000); // restart enemy fire
+    }
+
+    document.getElementById('sensitivity').addEventListener('input',(e)=>{accel = parseFloat(e.target.value);});
+    window.addEventListener('resize',()=>{
+      camera.aspect = window.innerWidth/window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // Joystick
+    const joystick=document.getElementById('joystick');
+    const stick=document.getElementById('stick');
+    let joyActive=false, joyCenter={x:0,y:0};
+    joystick.addEventListener('touchstart',startJoy);
+    joystick.addEventListener('mousedown',startJoy);
+    function startJoy(e){ joyActive=true;const rect=joystick.getBoundingClientRect();joyCenter={x:rect.left+rect.width/2,y:rect.top+rect.height/2};moveJoy(e);window.addEventListener('touchmove',moveJoy);window.addEventListener('mousemove',moveJoy);window.addEventListener('touchend',endJoy);window.addEventListener('mouseup',endJoy);}
+    function moveJoy(e){if(!joyActive)return;const touch=e.touches?e.touches[0]:e;const dx=touch.clientX-joyCenter.x;const dy=touch.clientY-joyCenter.y;const dist=Math.min(50,Math.sqrt(dx*dx+dy*dy));const angle=Math.atan2(dy,dx);stick.style.transform=`translate(${Math.cos(angle)*dist}px,${Math.sin(angle)*dist}px)`;releaseKey('ArrowUp');releaseKey('ArrowDown');releaseKey('ArrowLeft');releaseKey('ArrowRight');if(dist>15){if(dy<-15)pressKey('ArrowUp');if(dy>15)pressKey('ArrowDown');if(dx<-15)pressKey('ArrowLeft');if(dx>15)pressKey('ArrowRight');}}
+    function endJoy(){joyActive=false;stick.style.transform='translate(0,0)';releaseKey('ArrowDown');releaseKey('ArrowUp');releaseKey('ArrowLeft');releaseKey('ArrowRight');window.removeEventListener('touchmove',moveJoy);window.removeEventListener('mousemove',moveJoy);window.removeEventListener('touchend',endJoy);window.removeEventListener('mouseup',endJoy);}
+
+    // Auto-fire button
+    const shootBtn=document.getElementById('shootBtn');
+    function startShooting(e){if(e&&e.preventDefault)e.preventDefault();if(shootInterval)return;shoot();shootInterval=setInterval(shoot,100);}
+    function stopShooting(e){if(e&&e.preventDefault)e.preventDefault();if(shootInterval){clearInterval(shootInterval);shootInterval=null;}}
+    shootBtn.addEventListener('mousedown',startShooting);
+    shootBtn.addEventListener('mouseup',stopShooting);
+    shootBtn.addEventListener('mouseleave',stopShooting);
+    shootBtn.addEventListener('touchstart',startShooting,{passive:false});
+    shootBtn.addEventListener('touchend',stopShooting);
+    shootBtn.addEventListener('touchcancel',stopShooting);
+
+    document.getElementById('rollLeft').addEventListener('touchstart',()=>pressKey('KeyA'));
+    document.getElementById('rollLeft').addEventListener('touchend',()=>releaseKey('KeyA'));
+    document.getElementById('rollLeft').addEventListener('mousedown',()=>pressKey('KeyA'));
+    document.getElementById('rollLeft').addEventListener('mouseup',()=>releaseKey('KeyA'));
+    document.getElementById('rollRight').addEventListener('touchstart',()=>pressKey('KeyD'));
+    document.getElementById('rollRight').addEventListener('touchend',()=>releaseKey('KeyD'));
+    document.getElementById('rollRight').addEventListener('mousedown',()=>pressKey('KeyD'));
+    document.getElementById('rollRight').addEventListener('mouseup',()=>releaseKey('KeyD'));
+
+    document.getElementById('resetBtn').addEventListener('click', reset);
+
+    // Start first enemy fire
+    setTimeout(enemyShoot,1200);
+  </script>
+</body>
+</html>
